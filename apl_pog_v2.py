@@ -5,92 +5,188 @@ import requests
 
 API_URL = "https://danepubliczne.imgw.pl/api/data/synop/"
 
-def pobierz_dane():
-    """Pobiera dane z API IMGW i zwraca listę słowników"""
-    try:
-        response = requests.get(API_URL, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        messagebox.showerror("Błąd", f"Nie udało się pobrać danych z API:\n{e}")
-        return []
+class SortowalnaTabela:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Pogoda IMGW – sortowalna i filtrowalna tabela")
+        self.root.geometry("1150x650")
 
-def odswiez_tabele():
-    """Pobiera aktualne dane i wyświetla je w tabeli"""
-    global table, model
+        self.sort_col = None
+        self.sort_reverse = False
+        self.all_data = []
+        self.filtered_data = []
 
-    dane = pobierz_dane()
-    if not dane:
-        return
+        # --- GÓRNY PANEL ---
+        top_frame = ttk.Frame(root)
+        top_frame.pack(fill="x", pady=5, padx=10)
 
-    dane_tabeli = {}
-    for i, stacja in enumerate(dane, start=1):
-        # przygotowanie godziny z minutami (np. 14:00)
-        godzina = stacja.get("godzina_pomiaru", "")
-        godzina_str = f"{godzina}:00" if godzina != "" else ""
+        ttk.Label(
+            top_frame, text="🌤 Dane ze stacji IMGW", font=("Arial", 14, "bold")
+        ).pack(side="left", padx=5)
 
-        rekord = {
-            "Stacja": stacja["stacja"],
-            "Temperatura [°C]": _to_float(stacja.get("temperatura")),
-            "Ciśnienie [hPa]": _to_float(stacja.get("cisnienie")),
-            "Wilgotność [%]": _to_float(stacja.get("wilgotnosc_wzgledna")),
-            "Wiatr [m/s]": _to_float(stacja.get("predkosc_wiatru")),
-            "Kierunek [°]": _to_float(stacja.get("kierunek_wiatru")),
-            "Opady [mm]": _to_float(stacja.get("suma_opadu")),
-            "Data": stacja["data_pomiaru"],
-            "Godzina": godzina_str
-        }
-        dane_tabeli[str(i)] = rekord
+        ttk.Button(
+            top_frame, text="🔄 Odśwież", command=self.odswiez_dane
+        ).pack(side="right", padx=5)
 
-    # czyszczenie poprzednich danych z ramki
-    for widget in frame_tabela.winfo_children():
-        widget.destroy()
+        # --- FILTR STACJI ---
+        filter_frame = ttk.Frame(root)
+        filter_frame.pack(fill="x", pady=5, padx=10)
 
-    # utworzenie modelu tabeli
-    model = TableModel()
-    model.importDict(dane_tabeli)
+        ttk.Label(filter_frame, text="Szukaj stacji:").pack(side="left", padx=(0,5))
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(filter_frame, textvariable=self.search_var, width=40)
+        search_entry.pack(side="left", padx=5)
+        search_entry.bind("<KeyRelease>", self.filtruj_stacje)
 
-    # tworzymy tabelę
-    table = TableCanvas(
-        frame_tabela,
-        model=model,
-        editable=False,
-        read_only=True,
-        width=1000,
-        height=500,
-        cellwidth=120,
-        thefont=("Arial", 10),
-        rowheight=22,
-        showkeynamesinheader=True
-    )
-    table.createTableFrame()
+        # --- TABELA ---
+        self.table_frame = ttk.Frame(root)
+        self.table_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-    # włącz sortowanie po kliknięciu w nagłówek kolumny
-    table.sortTableModel = True
+        self.model = None
+        self.table = None
 
-def _to_float(value):
-    """Konwertuje wartość na float jeśli możliwe, inaczej zwraca oryginał"""
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return value
+        # Pobranie danych
+        self.odswiez_dane()
 
-# --- GUI ---
-root = tk.Tk()
-root.title("Pogoda IMGW – wszystkie stacje (sortowalna tabela)")
-root.geometry("1100x600")
+    def pobierz_dane(self):
+        """Pobiera dane z API IMGW"""
+        try:
+            response = requests.get(API_URL, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Błąd", f"Nie udało się pobrać danych z API:\n{e}")
+            return []
 
-frame_top = ttk.Frame(root)
-frame_top.pack(pady=10, fill="x")
+    def odswiez_dane(self):
+        """Aktualizuje dane i odświeża tabelę"""
+        self.all_data = self.pobierz_dane()
+        self.filtered_data = self.all_data
+        self.sort_col = None
+        self.sort_reverse = False
+        self.stworz_tabele(self.filtered_data)
 
-ttk.Label(frame_top, text="Dane ze wszystkich stacji IMGW", font=("Arial", 14, "bold")).pack(side="left", padx=10)
+    def filtruj_stacje(self, event=None):
+        """Filtruje dane po nazwie stacji"""
+        filtr = self.search_var.get().lower().strip()
+        if not filtr:
+            self.filtered_data = self.all_data
+        else:
+            self.filtered_data = [
+                st for st in self.all_data if filtr in st["stacja"].lower()
+            ]
+        self.stworz_tabele(self.filtered_data)
 
-ttk.Button(frame_top, text="🔄 Odśwież dane", command=odswiez_tabele).pack(side="right", padx=10)
+    def stworz_tabele(self, dane):
+        """Tworzy tabelę w ramce"""
+        for widget in self.table_frame.winfo_children():
+            widget.destroy()
 
-frame_tabela = ttk.Frame(root)
-frame_tabela.pack(fill="both", expand=True, padx=10, pady=10)
+        if not dane:
+            ttk.Label(
+                self.table_frame, text="Brak danych do wyświetlenia.", font=("Arial", 12)
+            ).pack(pady=20)
+            return
 
-# załadowanie danych przy starcie
-odswiez_tabele()
+        dane_tabeli = {}
+        for i, stacja in enumerate(dane, start=1):
+            godzina = stacja.get("godzina_pomiaru", "")
+            godzina_str = f"{godzina}:00" if godzina != "" else ""
+            rekord = {
+                "Stacja": stacja["stacja"],
+                "Temperatura [°C]": self._to_float(stacja.get("temperatura")),
+                "Ciśnienie [hPa]": self._to_float(stacja.get("cisnienie")),
+                "Wilgotność [%]": self._to_float(stacja.get("wilgotnosc_wzgledna")),
+                "Wiatr [m/s]": self._to_float(stacja.get("predkosc_wiatru")),
+                "Kierunek [°]": self._to_float(stacja.get("kierunek_wiatru")),
+                "Opady [mm]": self._to_float(stacja.get("suma_opadu")),
+                "Data": stacja["data_pomiaru"],
+                "Godzina": godzina_str,
+            }
+            dane_tabeli[str(i)] = rekord
 
-root.mainloop()
+        # --- Dodanie strzałek do nagłówków ---
+        base_columns = [
+            "Stacja",
+            "Temperatura [°C]",
+            "Ciśnienie [hPa]",
+            "Wilgotność [%]",
+            "Wiatr [m/s]",
+            "Kierunek [°]",
+            "Opady [mm]",
+            "Data",
+            "Godzina",
+        ]
+
+        headers = []
+        for col in base_columns:
+            if self.sort_col and col.startswith(self.sort_col):
+                arrow = "↓" if self.sort_reverse else "↑"
+                headers.append(f"{col} {arrow}")
+            else:
+                headers.append(col)
+
+        self.model = TableModel()
+        self.model.importDict(dane_tabeli)
+        self.model.columnNames = headers
+
+        self.table = TableCanvas(
+            self.table_frame,
+            model=self.model,
+            editable=False,
+            read_only=True,
+            width=1100,
+            height=500,
+            cellwidth=120,
+            thefont=("Arial", 10),
+            rowheight=22,
+        )
+        self.table.createTableFrame()
+        self.table.bind("<Button-1>", self.on_header_click)
+
+    def on_header_click(self, event):
+        """Kliknięcie w nagłówek kolumny"""
+        col_clicked = self.table.get_col_clicked(event)
+        if not col_clicked:
+            return
+
+        colname = self.table.model.columnNames[col_clicked]
+        colname = colname.replace(" ↑", "").replace(" ↓", "")
+
+        # jeśli kliknięto ponownie ten sam nagłówek → zmiana kierunku
+        if self.sort_col == colname:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_col = colname
+            self.sort_reverse = False
+
+        self.sortuj_po_kolumnie(colname)
+
+    def sortuj_po_kolumnie(self, kolumna):
+        """Sortowanie po wybranej kolumnie"""
+        def klucz_sort(x):
+            val = x.get(kolumna)
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return str(val)
+
+        posortowane = sorted(
+            [rek for rek in self.model.getAllCells().values()],
+            key=klucz_sort,
+            reverse=self.sort_reverse,
+        )
+        self.stworz_tabele(posortowane)
+
+    def _to_float(self, value):
+        """Konwertuje wartość na float jeśli to możliwe"""
+        try:
+            return round(float(value), 1)
+        except (ValueError, TypeError):
+            return value
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SortowalnaTabela(root)
+    root.mainloop()
